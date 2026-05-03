@@ -1,151 +1,43 @@
 import express from "express";
 import { createServer } from "http";
-import { Server } from "socket.io";
-import { createAdapter } from "@socket.io/redis-adapter";
-import { createClient } from "ioredis";
-import { Issuer } from "openid-client";
-import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import config from "./src/config.js";
+import { connectRedis, disconnectRedis } from "./src/redis.js";
+import authRouter, { initAuth } from "./src/auth.js";
+import { initSocket } from "./src/socket.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-
-const {
-  PORT = 3000,
-  OIDC_ISSUER, // e.g. https://accounts.google.com
-  OIDC_CLIENT_ID,
-  OIDC_CLIENT_SECRET,
-  OIDC_REDIRECT_URI, // e.g. http://localhost:3000/auth/callback
-  JWT_SECRET, // sign your own session tokens
-  REDIS_URL = "redis://localhost:6379",
-} = process.env;
-
-
-const pub = createClient({ lazyConnect: true, enableOfflineQueue: false });
-const sub = pub.duplicate();
-await pub.connect();
-await sub.connect();
-
+const { pub, sub } = await connectRedis();
 
 const app = express();
 const httpServer = createServer(app);
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public"))); // index.html lives here
+app.use(rateLimit({ windowMs: config.httpRateLimitWindow, max: config.httpRateLimitMax }));
+app.use(express.static(path.join(__dirname, "public")));
 
-app.use(rateLimit({ windowMs: 60_000, max: 100 }));
+app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
+await initAuth();
+app.use("/auth", authRouter);
 
-const issuer = await Issuer.discover(OIDC_ISSUER);
-const oidcClient = new issuer.Client({
-  client_id: OIDC_CLIENT_ID,
-  client_secret: OIDC_CLIENT_SECRET,
-  redirect_uris: [OIDC_REDIRECT_URI],
-  response_types: ["code"],
-});
+const io = initSocket(httpServer, pub, sub);
 
-app.get("/auth/login", (req, res) => {
-  const url = oidcClient.authorizationUrl({
-    scope: "openid email profile",
-    state: crypto.randomUUID(),
-  });
-  res.redirect(url);
-});
+httpServer.listen(config.port, () =>
+  console.log(`[server] http://localhost:${config.port}`),
+);
 
-app.get("/auth/callback", async (req, res) => {
-  try {
-    const params = oidcClient.callbackParams(req);
-    const tokenSet = await oidcClient.callback(OIDC_REDIRECT_URI, params);
-    const userinfo = await oidcClient.userinfo(tokenSet.access_token);
+async function shutdown(signal) {
+  console.log(`\n[server] ${signal} received — shutting down`);
+  io.close();
+  httpServer.close();
+  await disconnectRedis();
+  process.exit(0);
+}
 
-    const token = jwt.sign(
-      { sub: userinfo.sub, email: userinfo.email },
-      JWT_SECRET,
-      { expiresIn: "1h" },
-    );
-
-    res.send(`
-      <script>
-        localStorage.setItem("token", ${JSON.stringify(token)});
-        window.location.href = "/";
-      </script>
-    `);
-  } catch (err) {
-    console.error("Auth callback error:", err.message);
-    res.status(401).send("Auth failed");
-  }
-});
-
-const io = new Server(httpServer);
-io.adapter(createAdapter(pub, sub));
-
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error("No token"));
-  try {
-    socket.user = jwt.verify(token, JWT_SECRET); // { sub, email }
-    next();
-  } catch {
-    next(new Error("Invalid token"));
-  }
-});
-
-// per-user rate limit for checkbox updates (server-side enforcement)
-const updateCounts = new Map(); // userId → count this window
-setInterval(() => updateCounts.clear(), 10_000); // reset every 10s
-const UPDATE_LIMIT = 50; // max updates per user per 10s window
-
-const pendingBatch = {}; // { checkboxId: { state, ts } }
-
-io.on("connection", async (socket) => {
-  console.log(`connect: ${socket.user.email}`);
-
-  // send full state on join
-  const raw = await pub.hgetall("checkboxes");
-  const full = raw
-    ? Object.fromEntries(
-        Object.entries(raw).map(([id, v]) => [id, JSON.parse(v)]),
-      )
-    : {};
-  socket.emit("state:full", full);
-
-  socket.on("checkbox:update", async (id, state) => {
-    // rate limit
-    const userId = socket.user.sub;
-    const count = (updateCounts.get(userId) ?? 0) + 1;
-    if (count > UPDATE_LIMIT) return; // silently drop
-    updateCounts.set(userId, count);
-
-    const ts = Date.now();
-
-    // reject stale writes
-    const existing = await pub.hget("checkboxes", String(id));
-    if (existing) {
-      const parsed = JSON.parse(existing);
-      if (ts < parsed.ts) return;
-    }
-
-    // persist to redis
-    await pub.hset("checkboxes", String(id), JSON.stringify({ state, ts }));
-
-    // accumulate in batch
-    pendingBatch[id] = { state, ts };
-  });
-
-  socket.on("disconnect", () => {
-    console.log(`disconnect: ${socket.user.email}`);
-  });
-});
-
-// flush batch to all clients across all servers every 100ms
-setInterval(() => {
-  const keys = Object.keys(pendingBatch);
-  if (!keys.length) return;
-  const flush = Object.fromEntries(keys.map((k) => [k, pendingBatch[k]]));
-  keys.forEach((k) => delete pendingBatch[k]);
-  io.emit("batch:update", flush);
-}, 100);
-
-httpServer.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
