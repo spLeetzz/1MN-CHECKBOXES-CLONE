@@ -11,47 +11,41 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ---- CONFIG ----
 
 const {
-  PORT          = 3000,
-  OIDC_ISSUER,        // e.g. https://accounts.google.com
+  PORT = 3000,
+  OIDC_ISSUER, // e.g. https://accounts.google.com
   OIDC_CLIENT_ID,
   OIDC_CLIENT_SECRET,
-  OIDC_REDIRECT_URI,  // e.g. http://localhost:3000/auth/callback
-  JWT_SECRET,         // sign your own session tokens
+  OIDC_REDIRECT_URI, // e.g. http://localhost:3000/auth/callback
+  JWT_SECRET, // sign your own session tokens
   REDIS_URL = "redis://localhost:6379",
 } = process.env;
 
-// ---- REDIS ----
 
 const pub = createClient({ lazyConnect: true, enableOfflineQueue: false });
 const sub = pub.duplicate();
 await pub.connect();
 await sub.connect();
 
-// ---- EXPRESS ----
 
-const app        = express();
+const app = express();
 const httpServer = createServer(app);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public"))); // index.html lives here
 
-// basic rate limit on all HTTP routes
 app.use(rateLimit({ windowMs: 60_000, max: 100 }));
 
-// ---- OIDC ----
 
 const issuer = await Issuer.discover(OIDC_ISSUER);
 const oidcClient = new issuer.Client({
-  client_id:                OIDC_CLIENT_ID,
-  client_secret:            OIDC_CLIENT_SECRET,
-  redirect_uris:            [OIDC_REDIRECT_URI],
-  response_types:           ["code"],
+  client_id: OIDC_CLIENT_ID,
+  client_secret: OIDC_CLIENT_SECRET,
+  redirect_uris: [OIDC_REDIRECT_URI],
+  response_types: ["code"],
 });
 
-// redirect to provider
 app.get("/auth/login", (req, res) => {
   const url = oidcClient.authorizationUrl({
     scope: "openid email profile",
@@ -60,21 +54,18 @@ app.get("/auth/login", (req, res) => {
   res.redirect(url);
 });
 
-// provider redirects back here
 app.get("/auth/callback", async (req, res) => {
   try {
-    const params      = oidcClient.callbackParams(req);
-    const tokenSet    = await oidcClient.callback(OIDC_REDIRECT_URI, params);
-    const userinfo    = await oidcClient.userinfo(tokenSet.access_token);
+    const params = oidcClient.callbackParams(req);
+    const tokenSet = await oidcClient.callback(OIDC_REDIRECT_URI, params);
+    const userinfo = await oidcClient.userinfo(tokenSet.access_token);
 
-    // mint a short-lived JWT the client will use for socket auth
     const token = jwt.sign(
       { sub: userinfo.sub, email: userinfo.email },
       JWT_SECRET,
-      { expiresIn: "1h" }
+      { expiresIn: "1h" },
     );
 
-    // send token to client — store in localStorage then redirect
     res.send(`
       <script>
         localStorage.setItem("token", ${JSON.stringify(token)});
@@ -87,12 +78,9 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-// ---- SOCKET.IO ----
-
 const io = new Server(httpServer);
 io.adapter(createAdapter(pub, sub));
 
-// auth middleware — runs before every connection
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error("No token"));
@@ -117,14 +105,16 @@ io.on("connection", async (socket) => {
   // send full state on join
   const raw = await pub.hgetall("checkboxes");
   const full = raw
-    ? Object.fromEntries(Object.entries(raw).map(([id, v]) => [id, JSON.parse(v)]))
+    ? Object.fromEntries(
+        Object.entries(raw).map(([id, v]) => [id, JSON.parse(v)]),
+      )
     : {};
   socket.emit("state:full", full);
 
   socket.on("checkbox:update", async (id, state) => {
     // rate limit
     const userId = socket.user.sub;
-    const count  = (updateCounts.get(userId) ?? 0) + 1;
+    const count = (updateCounts.get(userId) ?? 0) + 1;
     if (count > UPDATE_LIMIT) return; // silently drop
     updateCounts.set(userId, count);
 
@@ -153,11 +143,9 @@ io.on("connection", async (socket) => {
 setInterval(() => {
   const keys = Object.keys(pendingBatch);
   if (!keys.length) return;
-  const flush = Object.fromEntries(keys.map(k => [k, pendingBatch[k]]));
-  keys.forEach(k => delete pendingBatch[k]);
+  const flush = Object.fromEntries(keys.map((k) => [k, pendingBatch[k]]));
+  keys.forEach((k) => delete pendingBatch[k]);
   io.emit("batch:update", flush);
 }, 100);
-
-// ---- START ----
 
 httpServer.listen(PORT, () => console.log(`http://localhost:${PORT}`));
