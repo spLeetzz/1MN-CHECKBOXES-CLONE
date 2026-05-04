@@ -1,6 +1,4 @@
-/**
- * Socket.IO setup — checkbox real-time sync.
- */
+// Socket sync
 
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
@@ -18,7 +16,7 @@ const pendingBatch = {};
 export function initSocket(httpServer) {
   const io = new Server(httpServer);
 
-  // If using Redis, attach the pub/sub adapter for multi-process scaling
+  // Redis adapter
   const pub = store.getPub();
   const sub = store.getSub();
   if (pub && sub) {

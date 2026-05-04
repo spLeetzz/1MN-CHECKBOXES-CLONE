@@ -11,7 +11,7 @@ import { initSocket } from "./src/socket.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Connect store (redis or memory — no-op for memory)
+// Connect store
 await store.connect();
 
 const app = express();

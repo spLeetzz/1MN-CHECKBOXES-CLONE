@@ -1,13 +1,4 @@
-/**
- * OIDC Client SDK (from General Auth Service)
- * Copied from: General Auth Service/sdk/oidc-client.js
- *
- * Environment variables required:
- * OIDC_ISSUER_URL="http://localhost:3000"
- * OIDC_CLIENT_ID="your-client-id"
- * OIDC_CLIENT_SECRET="your-client-secret"
- * OIDC_REDIRECT_URI="http://localhost:4000/auth/callback"
- */
+// OIDC Client
 
 class OIDCClient {
   constructor(config = {}) {
@@ -21,9 +12,7 @@ class OIDCClient {
     }
   }
 
-  /**
-   * Get the authorization URL to redirect the user to.
-   */
+  // Get auth URL
   getAuthorizationUrl(state, scopes = ["openid", "profile", "email"]) {
     const params = new URLSearchParams({
       response_type: "code",
@@ -35,9 +24,7 @@ class OIDCClient {
     return `${this.issuerUrl}/authorize?${params.toString()}`;
   }
 
-  /**
-   * Exchange the authorization code for access and ID tokens.
-   */
+  // Exchange code
   async exchangeCodeForToken(code) {
     const params = new URLSearchParams({
       grant_type: "authorization_code",
@@ -68,9 +55,7 @@ class OIDCClient {
     return response.json();
   }
 
-  /**
-   * Fetch user information using the access token.
-   */
+  // Fetch user info
   async getUserInfo(accessToken) {
     const response = await fetch(`${this.issuerUrl}/userinfo`, {
       method: "GET",

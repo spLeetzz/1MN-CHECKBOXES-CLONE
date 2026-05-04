@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { z } from "zod";
 
-/** Define expected environment variables with Zod */
+// Env schema
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   STORE: z.enum(["memory", "redis"]).default("memory"),
@@ -17,7 +17,7 @@ const envSchema = z.object({
 // Parse and validate the environment variables
 const env = envSchema.parse(process.env);
 
-/** Central configuration — all env vars read in one place. */
+// Config
 const config = {
   port: env.PORT,
   store: env.STORE,

@@ -1,10 +1,4 @@
-/**
- * Authentication routes — uses the General Auth Service OIDC SDK.
- *
- * GET  /auth/login    → redirect to auth service
- * GET  /auth/callback → exchange code, mint local JWT, redirect to /
- * GET  /auth/me       → return current user info from JWT
- */
+// Auth routes
 
 import { Router } from "express";
 import crypto from "crypto";
@@ -25,14 +19,14 @@ export function initAuth() {
   console.log("[auth] OIDC client initialized");
 }
 
-// Redirect user to auth service login
+// Login
 router.get("/login", (_req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   const url = oidcClient.getAuthorizationUrl(state, ["openid", "profile", "email"]);
   res.redirect(url);
 });
 
-// Auth service redirects back here with ?code=...&state=...
+// OIDC callback
 router.get("/callback", async (req, res) => {
   try {
     const { code } = req.query;
@@ -41,14 +35,14 @@ router.get("/callback", async (req, res) => {
     const tokenData = await oidcClient.exchangeCodeForToken(code);
     const userInfo = await oidcClient.getUserInfo(tokenData.access_token);
 
-    // Mint our own short-lived JWT for socket auth
+    // Local JWT
     const token = jwt.sign(
       { sub: userInfo.sub, email: userInfo.email, name: userInfo.name },
       config.jwtSecret,
       { expiresIn: config.jwtExpiresIn }
     );
 
-    // Send token to client via a small page that stores it and redirects HOME
+    // Store token and redirect
     res.send(`<!DOCTYPE html>
 <html><head><title>Logging in...</title></head>
 <body>
@@ -63,7 +57,7 @@ router.get("/callback", async (req, res) => {
   }
 });
 
-// Return current user info (called by frontend)
+// Get user
 router.get("/me", (req, res) => {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer ")) return res.status(401).json({ error: "No token" });

@@ -11,9 +11,12 @@
  * It will output the client_id and client_secret to paste into your .env
  */
 
-const AUTH_BASE = process.env.AUTH_BASE || "http://localhost:3000";
-const CHECKBOX_PORT = process.env.CHECKBOX_PORT || "4000";
-const REDIRECT_URI = `http://localhost:${CHECKBOX_PORT}/auth/callback`;
+import "dotenv/config";
+import fetch from "node-fetch";
+
+// We read these from your .env file now!
+const AUTH_BASE = process.env.OIDC_ISSUER_URL || "http://localhost:3000";
+const REDIRECT_URI = process.env.OIDC_REDIRECT_URI || "http://localhost:4000/auth/callback";
 
 // You need to be logged in first — get a session cookie or a bearer token.
 // Easiest: pass a bearer token via AUTH_TOKEN env var.
@@ -21,14 +24,13 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN;
 
 if (!AUTH_TOKEN) {
   console.error(`
-  ┌─────────────────────────────────────────────────────────────┐
-  │  You need to provide an AUTH_TOKEN to register a client.   │
-  │                                                             │
-  │  1. Login at ${AUTH_BASE}/authorize/login                   │
-  │  2. Get a token from the dashboard or API                  │
-  │  3. Run:                                                    │
-  │     AUTH_TOKEN=<your-token> node scripts/register-client.mjs│
-  └─────────────────────────────────────────────────────────────┘
+❌ ERROR: Missing AUTH_TOKEN.
+
+How to run:
+1. Login to your auth service in the browser
+2. Go to /api/me and copy the 'id'
+3. Or generate a token from your auth dashboard if you have one.
+4. Run: AUTH_TOKEN=<your-token> node scripts/register-client.mjs
   `);
   process.exit(1);
 }
