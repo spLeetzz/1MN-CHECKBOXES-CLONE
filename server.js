@@ -5,13 +5,14 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import config from "./src/config.js";
-import { connectRedis, disconnectRedis } from "./src/redis.js";
+import * as store from "./src/store/index.js";
 import authRouter, { initAuth } from "./src/auth.js";
 import { initSocket } from "./src/socket.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const { pub, sub } = await connectRedis();
+// Connect store (redis or memory — no-op for memory)
+await store.connect();
 
 const app = express();
 const httpServer = createServer(app);
@@ -22,20 +23,23 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-await initAuth();
+// Auth routes
+initAuth();
 app.use("/auth", authRouter);
 
-const io = initSocket(httpServer, pub, sub);
+// Socket.IO
+const io = initSocket(httpServer);
 
 httpServer.listen(config.port, () =>
-  console.log(`[server] http://localhost:${config.port}`),
+  console.log(`[server] http://localhost:${config.port}  (store: ${config.store})`),
 );
 
+// Graceful shutdown
 async function shutdown(signal) {
   console.log(`\n[server] ${signal} received — shutting down`);
   io.close();
   httpServer.close();
-  await disconnectRedis();
+  await store.disconnect();
   process.exit(0);
 }
 

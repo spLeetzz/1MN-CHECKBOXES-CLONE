@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>1M Checkboxes</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #111; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+
+    #header {
+      padding: 12px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #333; flex-shrink: 0;
+      background: #1a1a1a;
+    }
+    #header h1 { font-size: 1.1rem; color: #4af; }
+    #controls { display: flex; gap: 8px; align-items: center; }
+    #controls input {
+      background: #222; border: 1px solid #444; color: #eee;
+      padding: 4px 8px; border-radius: 4px; width: 120px;
+    }
+    #controls button, #user-area button {
+      background: #222; border: 1px solid #555; color: #eee;
+      padding: 4px 12px; border-radius: 4px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    #controls button:hover, #user-area button:hover { background: #333; }
+    #user-area { display: flex; gap: 8px; align-items: center; font-size: 0.85rem; }
+    #user-area .user-email { color: #4af; }
+
+    #scroll-container { flex: 1; overflow-y: scroll; position: relative; }
+    #total-height { position: relative; }
+
+    .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; height: 48px; padding: 0 8px; }
+    .row-number { width: 80px; min-width: 80px; text-align: right; padding-right: 12px; color: #555; font-size: 0.85rem; user-select: none; }
+    .row-checkboxes { display: flex; gap: 4px; align-items: center; }
+    .row-checkboxes input[type="checkbox"] { width: 27px; height: 27px; cursor: pointer; accent-color: #4af; }
+    .row-checkboxes input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.4; }
+
+    #overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    #overlay .card {
+      background: #1a1a1a; border: 1px solid #333;
+      border-radius: 12px; padding: 2rem; text-align: center;
+      max-width: 360px; width: 90%;
+    }
+    #overlay h2 { margin-bottom: 0.5rem; color: #4af; }
+    #overlay p { color: #999; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    #overlay button {
+      background: #4af; color: #111; border: none;
+      padding: 10px 28px; border-radius: 6px; font-size: 1rem;
+      font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+    }
+    #overlay button:hover { opacity: 0.85; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>1M Checkboxes</h1>
+    <div id="controls">
+      <input type="number" id="jump-input" placeholder="Jump to #" min="0" />
+      <button id="jump-btn">Jump</button>
+    </div>
+    <div id="user-area">
+      <span id="user-email" class="user-email"></span>
+      <button id="login-btn">Login</button>
+      <button id="logout-btn" class="hidden">Logout</button>
+    </div>
+  </div>
+
+  <!-- Login overlay for unauthenticated users -->
+  <div id="overlay">
+    <div class="card">
+      <h2>1 Million Checkboxes</h2>
+      <p>Login to start checking boxes with everyone in real time.</p>
+      <button id="overlay-login-btn">Sign in</button>
+    </div>
+  </div>
+
+  <div id="scroll-container">
+    <div id="total-height"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const TOTAL        = 1_000_000;
+    const ROW_HEIGHT   = 48;
+    const BUFFER_ROWS  = 32;
+    const CB_WIDTH     = 31;
+    const ROW_NUM_W    = 92;
+
+    const cbState = new Uint8Array(TOTAL);
+    const localTs = new Float64Array(TOTAL);
+
+    const scrollContainer = document.getElementById("scroll-container");
+    const totalHeightEl   = document.getElementById("total-height");
+    const overlay         = document.getElementById("overlay");
+    const loginBtn        = document.getElementById("login-btn");
+    const logoutBtn       = document.getElementById("logout-btn");
+    const userEmailEl     = document.getElementById("user-email");
+    const overlayLoginBtn = document.getElementById("overlay-login-btn");
+
+    let checkboxesPerRow = 1;
+    let totalRows        = 1;
+    let isLoggedIn       = false;
+    const renderedRows   = new Map();
+
+    // ---- AUTH ----
+
+    const token = localStorage.getItem("token");
+
+    if (token) {
+      fetch("/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(user => {
+          isLoggedIn = true;
+          overlay.classList.add("hidden");
+          loginBtn.classList.add("hidden");
+          logoutBtn.classList.remove("hidden");
+          userEmailEl.textContent = user.email || user.name || "user";
+          connectSocket(token);
+        })
+        .catch(() => {
+          localStorage.removeItem("token");
+          showLogin();
+        });
+    } else {
+      showLogin();
+    }
+
+    function showLogin() {
+      overlay.classList.remove("hidden");
+      loginBtn.classList.remove("hidden");
+      logoutBtn.classList.add("hidden");
+      userEmailEl.textContent = "";
+      // Still show the grid (read-only)
+      init();
+    }
+
+    function doLogin() { window.location.href = "/auth/login"; }
+    function doLogout() {
+      localStorage.removeItem("token");
+      window.location.reload();
+    }
+
+    loginBtn.addEventListener("click", doLogin);
+    overlayLoginBtn.addEventListener("click", doLogin);
+    logoutBtn.addEventListener("click", doLogout);
+
+    // ---- SOCKET ----
+
+    let socket = null;
+
+    function connectSocket(tok) {
+      socket = io({ auth: { token: tok } });
+
+      socket.on("state:full", (fullState) => {
+        for (const [id, { state: s, ts }] of Object.entries(fullState)) {
+          cbState[+id] = s;
+          localTs[+id] = ts;
+        }
+        refreshAllRendered();
+      });
+
+      socket.on("batch:update", (batch) => {
+        for (const [id, { state: s, ts }] of Object.entries(batch)) {
+          applyState(+id, s, ts);
+        }
+      });
+
+      socket.on("connect_error", (err) => {
+        console.error("Socket auth error:", err.message);
+        if (err.message === "Invalid token" || err.message === "No token") {
+          localStorage.removeItem("token");
+          showLogin();
+        }
+      });
+
+      init();
+    }
+
+    // ---- VIRTUAL SCROLL ----
+
+    function calcPerRow() {
+      const available = scrollContainer.clientWidth - ROW_NUM_W - 16;
+      return Math.max(1, Math.floor(available / CB_WIDTH));
+    }
+
+    function init() {
+      checkboxesPerRow = calcPerRow();
+      totalRows        = Math.ceil(TOTAL / checkboxesPerRow);
+      totalHeightEl.style.height = `${totalRows * ROW_HEIGHT}px`;
+      renderVisible();
+    }
+
+    function getVisibleRange() {
+      const scrollTop  = scrollContainer.scrollTop;
+      const viewHeight = scrollContainer.clientHeight;
+      const startRow   = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER_ROWS);
+      const endRow     = Math.min(totalRows - 1, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + BUFFER_ROWS);
+      return { startRow, endRow };
+    }
+
+    function createRow(rowIndex) {
+      const startId = rowIndex * checkboxesPerRow;
+      const el = document.createElement("div");
+      el.className = "row";
+      el.style.top = `${rowIndex * ROW_HEIGHT}px`;
+
+      const numEl = document.createElement("div");
+      numEl.className = "row-number";
+      numEl.textContent = startId;
+      el.appendChild(numEl);
+
+      const boxesEl = document.createElement("div");
+      boxesEl.className = "row-checkboxes";
+
+      const checkboxes = [];
+      for (let i = 0; i < checkboxesPerRow; i++) {
+        const id = startId + i;
+        if (id >= TOTAL) break;
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!cbState[id];
+        cb.dataset.id = id;
+        if (!isLoggedIn) cb.disabled = true;
+        cb.addEventListener("change", onCheckboxChange);
+        boxesEl.appendChild(cb);
+        checkboxes.push(cb);
+      }
+
+      el.appendChild(boxesEl);
+      totalHeightEl.appendChild(el);
+      renderedRows.set(rowIndex, { el, checkboxes });
+    }
+
+    function removeRow(rowIndex) {
+      const row = renderedRows.get(rowIndex);
+      if (!row) return;
+      row.el.remove();
+      renderedRows.delete(rowIndex);
+    }
+
+    function renderVisible() {
+      const { startRow, endRow } = getVisibleRange();
+      for (const rowIndex of renderedRows.keys()) {
+        if (rowIndex < startRow || rowIndex > endRow) removeRow(rowIndex);
+      }
+      for (let i = startRow; i <= endRow; i++) {
+        if (!renderedRows.has(i)) createRow(i);
+      }
+    }
+
+    function refreshAllRendered() {
+      for (const [rowIndex, { checkboxes }] of renderedRows) {
+        const startId = rowIndex * checkboxesPerRow;
+        checkboxes.forEach((cb, i) => { cb.checked = !!cbState[startId + i]; });
+      }
+    }
+
+    function applyState(id, s, ts) {
+      if (localTs[id] && ts <= localTs[id]) return;
+      cbState[id] = s;
+      localTs[id] = ts;
+      const rowIndex = Math.floor(id / checkboxesPerRow);
+      const row = renderedRows.get(rowIndex);
+      if (!row) return;
+      const posInRow = id % checkboxesPerRow;
+      const cb = row.checkboxes[posInRow];
+      if (cb) cb.checked = !!s;
+    }
+
+    // ---- DEBOUNCE ----
+
+    const debounceMap = {};
+    function onCheckboxChange(e) {
+      if (!socket) return;
+      const id = Number(e.target.dataset.id);
+      const checked = e.target.checked;
+      clearTimeout(debounceMap[id]);
+      debounceMap[id] = setTimeout(() => {
+        socket.emit("checkbox:update", id, checked ? 1 : 0);
+      }, 150);
+    }
+
+    // ---- JUMP ----
+
+    document.getElementById("jump-btn").addEventListener("click", () => {
+      const id = Number(document.getElementById("jump-input").value);
+      if (isNaN(id) || id < 0 || id >= TOTAL) return;
+      const rowIndex = Math.floor(id / checkboxesPerRow);
+      scrollContainer.scrollTop = rowIndex * ROW_HEIGHT;
+      renderVisible();
+    });
+
+    // ---- EVENTS ----
+
+    scrollContainer.addEventListener("scroll", renderVisible);
+    window.addEventListener("resize", () => {
+      for (const i of [...renderedRows.keys()]) removeRow(i);
+      init();
+    });
+  </script>
+</body>
+</html>
